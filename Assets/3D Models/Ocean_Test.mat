@@ -316,8 +316,8 @@ Material:
     - _UVEmissive: 0
     - _UseEmissiveIntensity: 0
     - _UseShadowThreshold: 0
-    - _WaterEdgeOpacity: 0.8
-    - _WaterOpacity: 1
+    - _WaterEdgeOpacity: 0.82
+    - _WaterOpacity: 0.9
     - _ZTestDepthEqualForOpaque: 4
     - _ZTestGBuffer: 4
     - _ZTestTransparent: 4
@@ -326,8 +326,8 @@ Material:
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _BaseColorMap_MipInfo: {r: 0, g: 0, b: 0, a: 0}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
-    - _Color01: {r: 0.0995016, g: 0.40574923, b: 0.49056602, a: 0}
-    - _Color02: {r: 0.055268776, g: 0.08757565, b: 0.16981131, a: 0}
+    - _Color01: {r: 0.14738332, g: 0.63110447, b: 0.6792453, a: 0}
+    - _Color02: {r: 0.024563847, g: 0.17209245, b: 0.28930807, a: 0}
     - _DiffusionProfileAsset: {r: 0, g: 0, b: 0, a: 0}
     - _Direction: {r: 1, g: 1, b: 0, a: 0}
     - _Direction2: {r: 1, g: 0.4, b: 0, a: 0}
