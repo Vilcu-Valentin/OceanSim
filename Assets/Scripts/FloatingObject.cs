@@ -1,50 +1,75 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+[RequireComponent(typeof(Rigidbody))]
 public class FloatingObject : MonoBehaviour
 {
-    public float offset = 0.5f;
-    public Transform[] floatPoints; // Cele 4 puncte pentru Raycast
-    public LayerMask waterLayer; // Layer-ul la care este oceanul
+    [Header("Buoyancy Settings")]
+    public float offset = 0f;                 // Înălţimea faţă de nivelul apei
+    public float floatSpeed = 5f;               // Cât de rapid îşi reglează poziţia
+    public float rotateSpeed = 2f;              // Cât de rapid se aliniază la valuri
 
-    void Update()
+    [Header("References")]
+    public Transform[] floatPoints;             // Cele 4 puncte de testare
+    public LayerMask waterLayer;                // Layer-ul apei
+
+    private Vector3[] hitPoints;                // Punctele de impact ale razelor
+    private Rigidbody rb;
+
+    void Start()
     {
-        if (floatPoints == null || floatPoints.Length == 0)
-            return;
+        rb = GetComponent<Rigidbody>();
+        if (floatPoints == null || floatPoints.Length < 3)
+            Debug.LogError("Trebuie să ai cel puțin 3 floatPoints configurate!");
+        hitPoints = new Vector3[floatPoints.Length];
+    }
 
-        Vector3 averageHitPoint = Vector3.zero;
-		Vector3[] hitPoints = new Vector3[4];
-		int hitCount = 0;
+    void FixedUpdate()
+    {
+        // 1) Raycast la fiecare punct
+        Vector3 avgPoint = Vector3.zero;
+        int hits = 0;
 
-        foreach(Transform point in floatPoints)
+        for (int i = 0; i < floatPoints.Length; i++)
         {
-            if (Physics.Raycast(point.position, Vector3.down, out RaycastHit hit, 100f, waterLayer))
+            Transform fp = floatPoints[i];
+            if (Physics.Raycast(fp.position, Vector3.down, out RaycastHit hit, 100f, waterLayer))
             {
-                averageHitPoint += hit.point;
-                hitCount++;
+                hitPoints[i] = hit.point;
+                avgPoint += hit.point;
+                hits++;
 
-				Debug.Log("Hit water at: " + hit.point);
-				Debug.DrawRay(point.position, Vector3.down * hit.distance, Color.red);
+                Debug.DrawRay(fp.position, Vector3.down * hit.distance, Color.blue);
+            }
+            else
+            {
+                // Dacă nu lovește, păstrează poziția anterioară ca fallback
+                hitPoints[i] = fp.position + Vector3.down * (transform.position.y - fp.position.y);
             }
         }
 
-        if (hitCount > 0)
+        if (hits == 0) return;
+
+        // 2) Ajustează înălțimea după media punctelor lovite
+        avgPoint /= hits;
+        Vector3 targetPos = new Vector3(transform.position.x, avgPoint.y + offset, transform.position.z);
+        Vector3 moveDir = (targetPos - transform.position) * floatSpeed;
+        rb.velocity = new Vector3(rb.velocity.x, moveDir.y, rb.velocity.z);
+
+        // 3) Dacă avem minim 3 hit-uri, calculăm normală de apă și ne aliniem la ea
+        if (hits >= 3)
         {
-            averageHitPoint /= hitCount;
+            // Folosim primele 3 puncte pentru plan
+            Vector3 v1 = hitPoints[1] - hitPoints[0];
+            Vector3 v2 = hitPoints[2] - hitPoints[0];
+            Vector3 waterNormal = Vector3.Cross(v1, v2).normalized;
 
-            // Pozitioneaza barca la media pozitiilor atinse
-            Vector3 newPos = new Vector3(transform.position.x, averageHitPoint.y + offset, transform.position.z);
-            transform.position = Vector3.Lerp(transform.position, newPos, Time.deltaTime * 5f);
+            // Proiecția direcției „forward” pe planul definit de normală
+            Vector3 forwardDir = Vector3.ProjectOnPlane(transform.forward, waterNormal).normalized;
+            Quaternion targetRot = Quaternion.LookRotation(forwardDir, waterNormal);
 
-			// Rotatie
-			Vector3 forward = (hitPoints[2] + hitPoints[3]) * 0.5f - (hitPoints[0] + hitPoints[1]) * 0.5f;
-			Vector3 right = (hitPoints[1] + hitPoints[3]) * 0.5f - (hitPoints[0] + hitPoints[2]) * 0.5f;
-
-			Vector3 up = Vector3.Cross(right, forward).normalized;
-
-			Quaternion targetRotation = Quaternion.LookRotation(forward, up);
-			transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * 2f);
-		}
+            rb.MoveRotation(Quaternion.Slerp(rb.rotation, targetRot, rotateSpeed * Time.fixedDeltaTime));
+        }
     }
 }
