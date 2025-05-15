@@ -1,6 +1,9 @@
 using UnityEngine;
 using System;
-using Complex = System.Numerics.Complex;  // alias only Complex to avoid Vector2/3 conflicts
+using Complex = System.Numerics.Complex;
+using Unity.Jobs;
+using Unity.Burst;
+using Unity.Collections;
 using System.Collections.Generic;
 
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
@@ -11,39 +14,37 @@ public class FFTOceanDisplacement : MonoBehaviour
     public int resolution = 64;
     [Tooltip("World-space size of the ocean plane.")]
     public float size = 100f;
+    [Tooltip("Wind speed (m/s) – parameter in Phillips spectrum.")]
     public float windSpeed = 10f;
-    [Tooltip("Wind speed (m/s) – only parameter in Phillips spectrum.")]
+    [Tooltip("Phillips constant for spectrum tuning.")]
     public float phillipsConstant = 0.0001f;
 
     [Header("Amplitude")]
-    [Tooltip("Multiplier on all displacements (use 1–10 for testing, then tweak)")]
+    [Tooltip("Height multiplier (1–10).")]
     public float heightScale = 2f;
-    [Tooltip("Multiplier on all displacements (use 1–10 for testing, then tweak)")]
+    [Tooltip("Chop (horizontal) multiplier (1–10).")]
     public float chopScale = 2f;
 
     [Header("Visualization")]
     public Color deepColor = new Color(0f, 0.1f, 0.3f, 1f);
     public Color peakColor = new Color(1f, 1f, 1f, 1f);
 
-    // --- internals ---
+    // Internal mesh
     Mesh mesh;
-    Vector3[] baseVerts;
-    Vector3[] verts;
+    Vector3[] baseVerts, verts;
     Color[] cols;
     int[] tris;
 
-    // Spectrum storage
-    Complex[,] H0;
-    float[,] omega;
-    Vector2[,] waveK;
+    // Flattened spectrum arrays
+    NativeArray<Complex> H0Arr, HtArr, HxArr, HzArr;
+    NativeArray<float> omegaArr;
+    NativeArray<Vector2> waveKArr;
 
-    // Working buffers (pre-allocated)
-    Complex[,] Ht;
-    Complex[,] Hx;
-    Complex[,] Hz;
-
-    // FFT twiddle factors: for each stage-length, store twiddles
+    // Cached twiddles for FFT
     Dictionary<int, Complex[]> twiddleCache;
+
+    // Scratch buffer for FFT rows
+    Complex[] rowBuf;
 
     int N;
     float L;
@@ -51,43 +52,76 @@ public class FFTOceanDisplacement : MonoBehaviour
 
     void Start()
     {
-        // Enforce power of two
         if (!Mathf.IsPowerOfTwo(resolution))
         {
-            Debug.LogWarning("Resolution must be a power of two. Rounding to nearest.");
+            Debug.LogWarning("Resolution must be power of two; rounding.");
             resolution = Mathf.ClosestPowerOfTwo(resolution);
         }
-
         N = resolution;
         L = size;
 
-        // Pre-allocate
-        H0 = new Complex[N, N];
-        omega = new float[N, N];
-        waveK = new Vector2[N, N];
-        Ht = new Complex[N, N];
-        Hx = new Complex[N, N];
-        Hz = new Complex[N, N];
+        int NN = N * N;
+        H0Arr = new NativeArray<Complex>(NN, Allocator.Persistent);
+        HtArr = new NativeArray<Complex>(NN, Allocator.Persistent);
+        HxArr = new NativeArray<Complex>(NN, Allocator.Persistent);
+        HzArr = new NativeArray<Complex>(NN, Allocator.Persistent);
+        omegaArr = new NativeArray<float>(NN, Allocator.Persistent);
+        waveKArr = new NativeArray<Vector2>(NN, Allocator.Persistent);
 
-        // Build and cache twiddles
+        rowBuf = new Complex[N];
+
         BuildTwiddleCache();
-
-        // Build mesh and spectrum
         BuildMesh();
         InitSpectrum();
     }
 
+    void OnDestroy()
+    {
+        if (H0Arr.IsCreated) H0Arr.Dispose();
+        if (HtArr.IsCreated) HtArr.Dispose();
+        if (HxArr.IsCreated) HxArr.Dispose();
+        if (HzArr.IsCreated) HzArr.Dispose();
+        if (omegaArr.IsCreated) omegaArr.Dispose();
+        if (waveKArr.IsCreated) waveKArr.Dispose();
+    }
+
     void Update()
     {
-        UpdateOcean(Time.time);
+        // 1) Spectrum update in parallel
+        var specJob = new SpectrumJob
+        {
+            H0 = H0Arr,
+            omega = omegaArr,
+            waveK = waveKArr,
+            Ht = HtArr,
+            Hx = HxArr,
+            Hz = HzArr,
+            time = Time.time,
+            chop = chopScale
+        };
+        JobHandle jh = specJob.Schedule(N * N, 64);
+        jh.Complete();
+
+        // 2) Inverse FFT
+        FFT2DLinear(HtArr);
+        FFT2DLinear(HxArr);
+        FFT2DLinear(HzArr);
+
+        // 3) Apply to mesh data
+        ApplyToMesh();
+
+        // 4) Upload to mesh
+        mesh.SetVertices(verts);
+        mesh.SetColors(cols);
+        mesh.SetNormals(CalcNormals());
+        mesh.RecalculateBounds();
     }
 
     void BuildMesh()
     {
         mesh = new Mesh { name = "FFT Ocean" };
-
-        int vertsPerSide = N + 1;
-        baseVerts = new Vector3[vertsPerSide * vertsPerSide];
+        int side = N + 1;
+        baseVerts = new Vector3[side * side];
         verts = new Vector3[baseVerts.Length];
         var uv = new Vector2[baseVerts.Length];
         cols = new Color[baseVerts.Length];
@@ -97,173 +131,162 @@ public class FFTOceanDisplacement : MonoBehaviour
         float step = L / N;
         int vi = 0;
         for (int z = 0; z <= N; z++)
-        {
             for (int x = 0; x <= N; x++, vi++)
             {
-                var pos = new Vector3(-half + x * step, 0, -half + z * step);
-                baseVerts[vi] = pos;
-                verts[vi] = pos;
+                var p = new Vector3(-half + x * step, 0, -half + z * step);
+                baseVerts[vi] = p;
+                verts[vi] = p;
                 uv[vi] = new Vector2((float)x / N, (float)z / N);
                 cols[vi] = deepColor;
             }
-        }
-
         int ti = 0;
         for (int z = 0; z < N; z++)
             for (int x = 0; x < N; x++)
             {
-                int i0 = z * vertsPerSide + x;
+                int i0 = z * side + x;
                 tris[ti++] = i0;
-                tris[ti++] = i0 + vertsPerSide;
+                tris[ti++] = i0 + side;
                 tris[ti++] = i0 + 1;
-
                 tris[ti++] = i0 + 1;
-                tris[ti++] = i0 + vertsPerSide;
-                tris[ti++] = i0 + vertsPerSide + 1;
+                tris[ti++] = i0 + side;
+                tris[ti++] = i0 + side + 1;
             }
-
         mesh.vertices = verts;
         mesh.uv = uv;
         mesh.triangles = tris;
         mesh.colors = cols;
-        mesh.RecalculateBounds(); // keep bounds updated
-
+        mesh.RecalculateBounds();
         GetComponent<MeshFilter>().mesh = mesh;
-    }
-
-    void BuildTwiddleCache()
-    {
-        twiddleCache = new Dictionary<int, Complex[]>();
-        int maxLen = N; // FFT length
-        for (int len = 2; len <= maxLen; len <<= 1)
-        {
-            int half = len >> 1;
-            var arr = new Complex[half];
-            for (int j = 0; j < half; j++)
-            {
-                double ang = 2 * Math.PI * j / len;
-                arr[j] = new Complex(Math.Cos(ang), Math.Sin(ang));
-            }
-            twiddleCache[len] = arr;
-        }
     }
 
     void InitSpectrum()
     {
         var rand = new System.Random();
         for (int i = 0; i < N; i++)
-        {
-            float kx = (i <= N / 2 ? i : i - N) * (2f * Mathf.PI / L);
             for (int j = 0; j < N; j++)
             {
-                float kz = (j <= N / 2 ? j : j - N) * (2f * Mathf.PI / L);
-                var kVec = new Vector2(kx, kz);
-                waveK[i, j] = kVec;
-                float kLen = kVec.magnitude;
-
-                if (kLen < 1e-6f)
+                int idx = i * N + j;
+                float kx = ((i <= N / 2) ? i : i - N) * (2f * Mathf.PI / L);
+                float kz = ((j <= N / 2) ? j : j - N) * (2f * Mathf.PI / L);
+                var k = new Vector2(kx, kz);
+                waveKArr[idx] = k;
+                float kl = k.magnitude;
+                if (kl < 1e-6f)
                 {
-                    H0[i, j] = Complex.Zero;
-                    omega[i, j] = 0f;
+                    H0Arr[idx] = Complex.Zero;
+                    omegaArr[idx] = 0f;
                 }
                 else
                 {
-                    float P = Phillips(kVec, windSpeed, phillipsConstant);
-                    double r1 = Gaussian(rand);
-                    double r2 = Gaussian(rand);
-                    H0[i, j] = new Complex(r1, r2) * Math.Sqrt(P * 0.5);
-                    omega[i, j] = Mathf.Sqrt(g * kLen);
+                    float P = Phillips(k, windSpeed, phillipsConstant);
+                    double r1 = Gaussian(rand), r2 = Gaussian(rand);
+                    H0Arr[idx] = new Complex(r1, r2) * Math.Sqrt(P * 0.5);
+                    omegaArr[idx] = Mathf.Sqrt(g * kl);
                 }
             }
-        }
-        // Enforce Hermitian symmetry
         for (int i = 0; i < N; i++)
             for (int j = 0; j < N; j++)
             {
-                int i2 = (N - i) % N;
-                int j2 = (N - j) % N;
-                H0[i2, j2] = Complex.Conjugate(H0[i, j]);
+                int idx = i * N + j;
+                int i2 = (N - i) % N, j2 = (N - j) % N;
+                H0Arr[i2 * N + j2] = Complex.Conjugate(H0Arr[idx]);
             }
     }
 
-    void UpdateOcean(float t)
+    void FFT2DLinear(NativeArray<Complex> data)
     {
-        // 3a) build spectra
+        // Rows
         for (int i = 0; i < N; i++)
-            for (int j = 0; j < N; j++)
-            {
-                var h0 = H0[i, j];
-                double wt = omega[i, j] * t;
-                var expP = Complex.FromPolarCoordinates(1, wt);
-                var expM = Complex.FromPolarCoordinates(1, -wt);
-                var h = h0 * expP + Complex.Conjugate(h0) * expM;
-                Ht[i, j] = h;
+        {
+            int baseIdx = i * N;
+            for (int j = 0; j < N; j++) rowBuf[j] = data[baseIdx + j];
+            FFT(rowBuf, true);
+            for (int j = 0; j < N; j++) data[baseIdx + j] = rowBuf[j];
+        }
+        // Columns
+        for (int j = 0; j < N; j++)
+        {
+            for (int i = 0; i < N; i++) rowBuf[i] = data[i * N + j];
+            FFT(rowBuf, true);
+            for (int i = 0; i < N; i++) data[i * N + j] = rowBuf[i];
+        }
+    }
 
-                // horizontal displacement
-                var k = waveK[i, j]; float kLen = k.magnitude;
-                if (kLen > 1e-6f)
-                {
-                    var factor = Complex.ImaginaryOne * (h / kLen);
-                    Hx[i, j] = factor * k.x;
-                    Hz[i, j] = factor * k.y;
-                }
-                else { Hx[i, j] = Complex.Zero; Hz[i, j] = Complex.Zero; }
-            }
-
-        // 3b) inverse FFTs (in-place, cached twiddles)
-        FFT2D(Ht, true);
-        FFT2D(Hx, true);
-        FFT2D(Hz, true);
-
-        // 4) apply
+    void ApplyToMesh()
+    {
         float minH = float.MaxValue, maxH = float.MinValue;
-        for (int i = 0; i < N; i++)
-            for (int j = 0; j < N; j++)
-            {
-                float v = (float)Ht[i, j].Real;
-                minH = Mathf.Min(minH, v);
-                maxH = Mathf.Max(maxH, v);
-            }
-
-        int idx = 0; float invRange = 1f / (maxH - minH);
+        for (int idx = 0; idx < N * N; idx++)
+        {
+            float h = (float)HtArr[idx].Real;
+            minH = Mathf.Min(minH, h);
+            maxH = Mathf.Max(maxH, h);
+        }
+        float invR = 1f / (maxH - minH);
+        int side = N + 1;
+        int v = 0;
         for (int z = 0; z <= N; z++)
-            for (int x = 0; x <= N; x++, idx++)
+            for (int x = 0; x <= N; x++, v++)
             {
-                int i = x % N, j = z % N;
-                float h = (float)Ht[i, j].Real * heightScale;
-                float dx = (float)Hx[i, j].Real * heightScale * chopScale;
-                float dz = (float)Hz[i, j].Real * heightScale * chopScale;
-
-                var bp = baseVerts[idx];
-                verts[idx] = new Vector3(bp.x + dx, h, bp.z + dz);
-
-                cols[idx] = Color.Lerp(deepColor, peakColor, (h / heightScale - minH) * invRange);
+                int idx = (x % N) * N + (z % N);
+                float h = (float)HtArr[idx].Real * heightScale;
+                float dx = (float)HxArr[idx].Real * heightScale * chopScale;
+                float dz = (float)HzArr[idx].Real * heightScale * chopScale;
+                var bp = baseVerts[v];
+                verts[v] = new Vector3(bp.x + dx, h, bp.z + dz);
+                float t = ((float)HtArr[idx].Real - minH) * invR;
+                cols[v] = Color.Lerp(deepColor, peakColor, t);
             }
+    }
 
-        mesh.vertices = verts;
-        mesh.colors = cols;
-        mesh.RecalculateBounds();
-
-        // Compute normals manually
+    Vector3[] CalcNormals()
+    {
         var norms = new Vector3[verts.Length];
         int side = N + 1;
         for (int z = 0; z <= N; z++)
             for (int x = 0; x <= N; x++)
             {
-                int idxN = z * side + x;
-                int ixm = Mathf.Max(x - 1, 0), ixp = Mathf.Min(x + 1, N);
-                int izm = Mathf.Max(z - 1, 0), izp = Mathf.Min(z + 1, N);
-                float hL = verts[z * side + ixm].y;
-                float hR = verts[z * side + ixp].y;
-                float hD = verts[izm * side + x].y;
-                float hU = verts[izp * side + x].y;
-                Vector3 n = new Vector3(hL - hR, 2f, hD - hU).normalized;
-                norms[idxN] = n;
+                int i = z * side + x;
+                int xm = Mathf.Max(x - 1, 0), xp = Mathf.Min(x + 1, N);
+                int zm = Mathf.Max(z - 1, 0), zp = Mathf.Min(z + 1, N);
+                float hL = verts[z * side + xm].y;
+                float hR = verts[z * side + xp].y;
+                float hD = verts[zm * side + x].y;
+                float hU = verts[zp * side + x].y;
+                norms[i] = new Vector3(hL - hR, 2f, hD - hU).normalized;
             }
-        mesh.normals = norms;
+        return norms;
     }
 
-    // --- FFT helpers using cached twiddles ---
+    [BurstCompile]
+    struct SpectrumJob : IJobParallelFor
+    {
+        [ReadOnly] public NativeArray<Complex> H0;
+        [ReadOnly] public NativeArray<float> omega;
+        [ReadOnly] public NativeArray<Vector2> waveK;
+        public NativeArray<Complex> Ht;
+        public NativeArray<Complex> Hx;
+        public NativeArray<Complex> Hz;
+        public float time;
+        public float chop;
+        public void Execute(int idx)
+        {
+            var h0 = H0[idx];
+            float w = omega[idx];
+            var expP = Complex.FromPolarCoordinates(1, w * time);
+            var expM = Complex.FromPolarCoordinates(1, -w * time);
+            var h = h0 * expP + Complex.Conjugate(h0) * expM;
+            Ht[idx] = h;
+            var k = waveK[idx]; float kl = k.magnitude;
+            if (kl > 1e-6f)
+            {
+                var f = Complex.ImaginaryOne * (h / kl);
+                Hx[idx] = f * k.x;
+                Hz[idx] = f * k.y;
+            }
+            else { Hx[idx] = Complex.Zero; Hz[idx] = Complex.Zero; }
+        }
+    }
+
     static int ReverseBits(int n, int bits)
     {
         int rev = 0;
@@ -273,14 +296,8 @@ public class FFTOceanDisplacement : MonoBehaviour
 
     public void FFT(Complex[] buf, bool inverse)
     {
-        int n = buf.Length;
-        int bits = (int)Math.Log(n, 2);
-        for (int i = 0; i < n; i++)
-        {
-            int j = ReverseBits(i, bits);
-            if (j > i) { var tmp = buf[i]; buf[i] = buf[j]; buf[j] = tmp; }
-        }
-
+        int n = buf.Length; int bits = (int)Math.Log(n, 2);
+        for (int i = 0; i < n; i++) { int j = ReverseBits(i, bits); if (j > i) { var t = buf[i]; buf[i] = buf[j]; buf[j] = t; } }
         for (int len = 2; len <= n; len <<= 1)
         {
             int half = len >> 1;
@@ -290,11 +307,9 @@ public class FFTOceanDisplacement : MonoBehaviour
                 {
                     var u = buf[i + j];
                     var v = buf[i + j + half] * (inverse ? Complex.Conjugate(tw[j]) : tw[j]);
-                    buf[i + j] = u + v;
-                    buf[i + j + half] = u - v;
+                    buf[i + j] = u + v; buf[i + j + half] = u - v;
                 }
         }
-
         if (inverse)
             for (int i = 0; i < n; i++) buf[i] /= n;
     }
@@ -304,10 +319,26 @@ public class FFTOceanDisplacement : MonoBehaviour
         int n = data.GetLength(0), m = data.GetLength(1);
         var row = new Complex[m];
         for (int i = 0; i < n; i++)
-        { for (int j = 0; j < m; j++) row[j] = data[i, j]; FFT(row, inverse); for (int j = 0; j < m; j++) data[i, j] = row[j]; }
+        {
+            for (int j = 0; j < m; j++) row[j] = data[i, j]; FFT(row, inverse); for (int j = 0; j < m; j++) data[i, j] = row[j];
+        }
         var col = new Complex[n];
         for (int j = 0; j < m; j++)
-        { for (int i = 0; i < n; i++) col[i] = data[i, j]; FFT(col, inverse); for (int i = 0; i < n; i++) data[i, j] = col[i]; }
+        {
+            for (int i = 0; i < n; i++) col[i] = data[i, j]; FFT(col, inverse); for (int i = 0; i < n; i++) data[i, j] = col[i];
+        }
+    }
+
+    void BuildTwiddleCache()
+    {
+        twiddleCache = new Dictionary<int, Complex[]>();
+        for (int len = 2; len <= N; len <<= 1)
+        {
+            int half = len >> 1;
+            var arr = new Complex[half];
+            for (int j = 0; j < half; j++) { double ang = 2 * Math.PI * j / len; arr[j] = new Complex(Math.Cos(ang), Math.Sin(ang)); }
+            twiddleCache[len] = arr;
+        }
     }
 
     double Gaussian(System.Random r)
@@ -316,14 +347,13 @@ public class FFTOceanDisplacement : MonoBehaviour
         return Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
     }
 
-    float Phillips(Vector2 k, float windSpd, float A)
+    float Phillips(Vector2 k, float wind, float A)
     {
-        float kLen = k.magnitude;
-        if (kLen < 1e-6f) return 0f;
-        float k2 = kLen * kLen;
-        float L = windSpd * windSpd / g; float L2 = L * L;
-        float dotKW = Vector2.Dot(k.normalized, new Vector2(1, 0));
-        float damp = 0.0001f; float l2 = (L * damp) * (L * damp);
-        return A * Mathf.Exp(-1f / (k2 * L2)) / (k2 * k2) * (dotKW * dotKW) * Mathf.Exp(-k2 * l2);
+        float kl = k.magnitude; if (kl < 1e-6f) return 0f;
+        float k2 = kl * kl;
+        float Lw = wind * wind / g, L2 = Lw * Lw;
+        float dk = Vector2.Dot(k.normalized, new Vector2(1, 0));
+        float damp = 0.0001f, l2 = (Lw * damp) * (Lw * damp);
+        return A * Mathf.Exp(-1f / (k2 * L2)) / (k2 * k2) * (dk * dk) * Mathf.Exp(-k2 * l2);
     }
 }
