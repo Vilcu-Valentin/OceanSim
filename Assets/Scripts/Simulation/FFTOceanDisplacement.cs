@@ -25,9 +25,15 @@ public class FFTOceanDisplacement : MonoBehaviour
     [Tooltip("Chop (horizontal) multiplier (1–10).")]
     public float chopScale = 2f;
 
+    [Header("Tiling")]
+    [Tooltip("How many tiles in X/Z.")]
+    public int tileCount = 3;
+
     [Header("Visualization")]
     public Color deepColor = new Color(0f, 0.1f, 0.3f, 1f);
     public Color peakColor = new Color(1f, 1f, 1f, 1f);
+
+    float _lastWindSpeed, _lastPhillipsConstant;
 
     // Internal mesh
     Mesh mesh;
@@ -72,6 +78,31 @@ public class FFTOceanDisplacement : MonoBehaviour
 
         BuildTwiddleCache();
         BuildMesh();
+
+        // then spawn the clones
+        var root = new GameObject("OceanTiles");
+        root.transform.SetParent(transform.parent, false);
+
+        // parent the original under root so it doesn't paint over itself
+        transform.SetParent(root.transform, false);
+
+        for (int ix = 0; ix < tileCount; ix++)
+            for (int iz = 0; iz < tileCount; iz++)
+            {
+                if (ix == tileCount / 2 && iz == tileCount / 2) continue; // skip center, that’s you
+                var go = Instantiate(gameObject, root.transform);
+                go.transform.localPosition = new Vector3(
+                  (ix - tileCount / 2) * size,
+                  0,
+                  (iz - tileCount / 2) * size
+                );
+                // disable the displacement script on clones so they don’t rebuild the mesh:
+                DestroyImmediate(go.GetComponent<FFTOceanDisplacement>());
+            }
+
+        _lastWindSpeed = windSpeed;
+        _lastPhillipsConstant = phillipsConstant;
+
         InitSpectrum();
     }
 
@@ -87,6 +118,18 @@ public class FFTOceanDisplacement : MonoBehaviour
 
     void Update()
     {
+        // if either value has been tweaked in the Inspector or via script…
+        if (!Mathf.Approximately(windSpeed, _lastWindSpeed) ||
+            !Mathf.Approximately(phillipsConstant, _lastPhillipsConstant))
+        {
+            // re-build H0 (and mirror it) using the new values:
+            InitSpectrum();
+
+            // update our “last known” so we only do this once per change:
+            _lastWindSpeed = windSpeed;
+            _lastPhillipsConstant = phillipsConstant;
+        }
+
         // 1) Spectrum update in parallel
         var specJob = new SpectrumJob
         {
@@ -119,7 +162,7 @@ public class FFTOceanDisplacement : MonoBehaviour
 
     void BuildMesh()
     {
-        mesh = new Mesh { name = "FFT Ocean" };
+        mesh = new Mesh { name = "FFT Ocean", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         int side = N + 1;
         baseVerts = new Vector3[side * side];
         verts = new Vector3[baseVerts.Length];
@@ -156,7 +199,7 @@ public class FFTOceanDisplacement : MonoBehaviour
         mesh.triangles = tris;
         mesh.colors = cols;
         mesh.RecalculateBounds();
-        GetComponent<MeshFilter>().mesh = mesh;
+        GetComponent<MeshFilter>().sharedMesh = mesh;
     }
 
     void InitSpectrum()

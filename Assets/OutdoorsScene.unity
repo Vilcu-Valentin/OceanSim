@@ -38,7 +38,7 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 0}
-  m_IndirectSpecularColor: {r: 2259.973, g: 2401.8088, b: 3499.692, a: 1}
+  m_IndirectSpecularColor: {r: 2282.6887, g: 2443.889, b: 3604.442, a: 1}
   m_UseRadianceAmbientProbe: 0
 --- !u!157 &3
 LightmapSettings:
@@ -658,7 +658,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1283459761
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -672,13 +672,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   resolution: 256
-  size: 50
-  windSpeed: 20
-  phillipsConstant: 0.01
-  heightScale: 2000
-  chopScale: 0.25
-  deepColor: {r: 0, g: 0.1516612, b: 0.29803923, a: 1}
-  peakColor: {r: 0.20501548, g: 0.8930817, b: 0.87166446, a: 1}
+  size: 100
+  windSpeed: 10
+  phillipsConstant: 0.0001
+  heightScale: 20000
+  chopScale: 0.7
+  tileCount: 30
+  deepColor: {r: 0, g: 0.1, b: 0.3, a: 1}
+  peakColor: {r: 1, g: 1, b: 1, a: 1}
 --- !u!4 &1283459762
 Transform:
   m_ObjectHideFlags: 0
@@ -762,7 +763,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1310727546
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1038,13 +1039,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1823688464}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.16947855, y: 0.21451794, z: -0.03782529, w: 0.9611599}
-  m_LocalPosition: {x: -12.4, y: 11.7, z: -22}
+  m_LocalRotation: {x: 0.16042997, y: 0.37686962, z: -0.066452265, w: 0.9098438}
+  m_LocalPosition: {x: -5.2, y: 11.7, z: -11.3}
   m_LocalScale: {x: 1, y: 1, z: 2.4573}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 20, y: 25.163, z: 0}
+  m_LocalEulerAnglesHint: {x: 20, y: 45, z: 0}
 --- !u!114 &1823688468
 MonoBehaviour:
   m_ObjectHideFlags: 0
