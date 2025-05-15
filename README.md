@@ -15,6 +15,8 @@ The simulation runs entirely on the CPU but is multi-threaded through Unity Jobs
 
 ## Documentation
 
+- [Project Paper](./Resources/Paper.pdf)
+
 ## Features
 
 - **Spectral Wave Synthesis** – Deep-water waves generated from a Phillips spectrum and evolved in the frequency domain  
