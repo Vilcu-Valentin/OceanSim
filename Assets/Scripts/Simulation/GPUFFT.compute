@@ -1,0 +1,256 @@
+#pragma kernel InitSpectrum
+#pragma kernel UpdateSpectrum
+#pragma kernel FFT_Horizontal_Stage // Generic FFT horizontal pass
+#pragma kernel FFT_Vertical_Stage   // Generic FFT vertical pass
+#pragma kernel BitReversal_Pass     // Bit reversal pass
+#pragma kernel WriteMaps
+
+// --- Constant Buffers ---
+cbuffer OceanParams : register(b0)
+{
+    int _Resolution; // Power of two
+    float _Size; // World‐space size of plane
+    float _WindSpeed; // Wind speed (m/s)
+    float _PhillipsA; // Phillips spectrum constant
+    float _Time; // Simulation time
+    float2 _WindDir; // Unit wind direction (e.g. float2(1,0))
+};
+
+cbuffer FFTParams : register(b1)
+{
+    int _Stage; // FFT stage (0..log2(N)-1)
+    int _IsInverse; // 0 = FFT, 1 = IFFT
+    int _BitRevDirection; // 0 = horizontal, 1 = vertical
+};
+
+// --- Resources ---
+RWTexture2D<float> _HeightRT;
+RWTexture2D<float2> _DispRT;
+
+RWStructuredBuffer<float2> H0; // initial spectrum H0(k)
+RWStructuredBuffer<float2> Ht; // evolving spectrum H(k,t)
+RWStructuredBuffer<float2> _DxSpectrum; // X displacement spectrum
+RWStructuredBuffer<float2> _DzSpectrum; // Z displacement spectrum
+
+StructuredBuffer<float2> Twiddles; // precomputed twiddle factors W_N^k
+
+// Ping-pong buffers for FFT
+StructuredBuffer<float2> _FFT_Src;
+RWStructuredBuffer<float2> _FFT_Dst;
+
+// --- Constants ---
+static const float PI = 3.1415926535f;
+static const float g = 9.81f;
+
+// --- Complex Helpers ---
+float2 ComplexMultiply(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y,
+                  a.x * b.y + a.y * b.x);
+}
+
+float2 ComplexConjugate(float2 c)
+{
+    return float2(c.x, -c.y);
+}
+
+// --- Gaussian via Box–Muller Transform ---
+float2 GaussianRandom(float2 uni)
+{
+    float u1 = max(uni.x, 1e-6f);
+    float u2 = uni.y;
+    float r = sqrt(-2.0f * log(u1));
+    float theta = 2.0f * PI * u2;
+    return float2(r * cos(theta), r * sin(theta));
+}
+
+// --- Kernel 1: Initialize H0 and enforce symmetry ---
+[numthreads(8, 8, 1)]
+void InitSpectrum(uint2 id : SV_DispatchThreadID)
+{
+    int i = id.x;
+    int j = id.y;
+    int idx = j * _Resolution + i;
+
+    // compute k-vector
+    float kx = (i <= _Resolution / 2 ? i : i - _Resolution) * (2.0f * PI / _Size);
+    float kz = (j <= _Resolution / 2 ? j : j - _Resolution) * (2.0f * PI / _Size);
+    float2 k_vec = float2(kx, kz);
+    float kLen2 = dot(k_vec, k_vec);
+    if (kLen2 < 1e-6f)
+        kLen2 = 1e-6f;
+
+    // Phillips spectrum
+    float L = (_WindSpeed * _WindSpeed) / g;
+    float ph = _PhillipsA * exp(-1.0f / (kLen2 * L * L)) / (kLen2 * kLen2);
+    // directional term
+    float2 kn = normalize(k_vec);
+    float D = dot(kn, _WindDir);
+    ph *= (D * D);
+    // damping
+    float damp = 0.0001f;
+    ph *= exp(-kLen2 * (L * damp) * (L * damp));
+
+    // zero DC
+    if (i == 0 && j == 0)
+        ph = 0.0f;
+
+    // gaussian random
+    float2 uni = float2(
+        frac(sin(dot(id, float2(12.9898f, 78.233f))) * 43758.5453f),
+        frac(cos(dot(id, float2(93.9898f, 67.345f))) * 96234.6734f)
+    );
+    float2 gauss = GaussianRandom(uni);
+    float2 h0_val = gauss * sqrt(ph * 0.5f);
+
+    // write H0(k)
+    H0[idx] = h0_val;
+
+    // enforce Hermitian symmetry: H0(-k) = conj(H0(k))
+    int mi = (_Resolution - i) % _Resolution;
+    int mj = (_Resolution - j) % _Resolution;
+    int midx = mj * _Resolution + mi;
+    H0[midx] = ComplexConjugate(h0_val);
+}
+
+// --- Kernel 2: Update H(k,t) and displacement spectra ---
+[numthreads(8, 8, 1)]
+void UpdateSpectrum(uint2 id : SV_DispatchThreadID)
+{
+    int x = id.x;
+    int y = id.y;
+    int idx = y * _Resolution + x;
+
+    float2 h0_k = H0[idx];
+    int mi = (_Resolution - x) % _Resolution;
+    int mj = (_Resolution - y) % _Resolution;
+    float2 h0_neg = H0[mj * _Resolution + mi];
+
+    // dispersion
+    float2 k_vec;
+    k_vec.x = (x <= _Resolution / 2 ? x : x - _Resolution) * (2.0f * PI / _Size);
+    k_vec.y = (y <= _Resolution / 2 ? y : y - _Resolution) * (2.0f * PI / _Size);
+    float k_len = length(k_vec);
+    float omega = sqrt(g * k_len);
+    float phi = omega * _Time;
+    float cp = cos(phi), sp = sin(phi);
+
+    // H = H0 e^{iωt} + conj(H0) e^{-iωt}
+    float2 exp_p = float2(cp, sp);
+    float2 exp_m = float2(cp, -sp);
+    float2 c1 = ComplexMultiply(h0_k, exp_p);
+    float2 c2 = ComplexMultiply(h0_neg, exp_m);
+    float2 ht_val = c1 + c2;
+    Ht[idx] = ht_val;
+
+    // displacement spectra
+    float2 dxF = 0, dzF = 0;
+    if (k_len > 1e-6f)
+    {
+        dxF = float2(0, -k_vec.x / k_len);
+        dzF = float2(0, -k_vec.y / k_len);
+    }
+    _DxSpectrum[idx] = ComplexMultiply(dxF, ht_val);
+    _DzSpectrum[idx] = ComplexMultiply(dzF, ht_val);
+}
+
+// --- Core FFT stage (DIT radix-2) ---
+void FFT_Core_Process(uint2 id, int stage, int dir, bool inv,
+                      StructuredBuffer<float2> T,
+                      StructuredBuffer<float2> S,
+                      RWStructuredBuffer<float2> D)
+{
+    int N = _Resolution;
+    int coord = (dir == 0 ? id.x : id.y);
+    int row = (dir == 0 ? id.y : id.x);
+
+    int
+    half = 1 << stage;
+    int m = 
+    half << 1;
+    int b = coord / m;
+    int p = coord % m;
+    int idx1 = b * m + (p % half);
+    int idx2 = idx1 + half;
+
+    float2 v1 = (dir == 0 ? S[row * N + idx1] : S[idx1 * N + row]);
+    float2 v2 = (dir == 0 ? S[row * N + idx2] : S[idx2 * N + row]);
+
+    int twi = (p % half) * (N / m);
+    float2 tw = T[twi];
+    if (inv)
+        tw = ComplexConjugate(tw);
+
+    float2 prod = ComplexMultiply(v2, tw);
+    float2 result = (p < half) ? (v1 + prod) : (v1 - prod);
+
+    if (dir == 0)
+        D[row * N + coord] = result;
+    else
+        D[coord * N + row] = result;
+}
+
+// --- Kernel 3: Horizontal FFT pass ---
+[numthreads(8, 8, 1)]
+void FFT_Horizontal_Stage(uint2 id : SV_DispatchThreadID)
+{
+    FFT_Core_Process(id, _Stage, 0, (_IsInverse != 0), Twiddles, _FFT_Src, _FFT_Dst);
+}
+
+// --- Kernel 4: Vertical FFT pass ---
+[numthreads(8, 8, 1)]
+void FFT_Vertical_Stage(uint2 id : SV_DispatchThreadID)
+{
+    FFT_Core_Process(id, _Stage, 1, (_IsInverse != 0), Twiddles, _FFT_Src, _FFT_Dst);
+}
+
+// --- Kernel 5: Bit reversal reorder ---
+[numthreads(8, 8, 1)]
+void BitReversal_Pass(uint2 id : SV_DispatchThreadID)
+{
+    int N = _Resolution;
+    int dir = _BitRevDirection;
+    int coord = (dir == 0 ? id.x : id.y);
+    int row = (dir == 0 ? id.y : id.x);
+
+    // count bits
+    int bits = 0;
+    for (int t = N; t > 1; t >>= 1)
+        bits++;
+
+    // do the reversal
+    int rev = 0;
+    for (int b = 0; b < bits; b++)
+        if ((coord >> b) & 1)
+            rev |= 1 << (bits - 1 - b);
+
+    if (coord < rev)
+    {
+        int i1 = (dir == 0 ? row * N + coord : coord * N + row);
+        int i2 = (dir == 0 ? row * N + rev : rev * N + row);
+        float2 v1 = _FFT_Dst[i1];
+        float2 v2 = _FFT_Dst[i2];
+        _FFT_Dst[i1] = v2;
+        _FFT_Dst[i2] = v1;
+    }
+}
+
+
+// --- Kernel 6: Write final height & displacement maps ---
+[numthreads(8, 8, 1)]
+void WriteMaps(uint2 id : SV_DispatchThreadID)
+{
+    uint idx = id.y * _Resolution + id.x;
+
+    // ------- NEW -------------------------------------------------------
+    float invN2 = 1.0 / (_Resolution * _Resolution); // scale
+    float sign = ((id.x ^ id.y) & 1) ? -1.0 : 1.0; // (-1)^(x+y)
+    //--------------------------------------------------------------------
+
+    float2 h = _FFT_Src[idx] * invN2 * sign;
+    float2 dx = _DxSpectrum[idx] * invN2 * sign;
+    float2 dz = _DzSpectrum[idx] * invN2 * sign;
+
+    _HeightRT[id] = h.x; // real height
+    _DispRT[id] = float2(dx.x, dz.x); // x in .r, z in .g
+}
