@@ -2468,20 +2468,6 @@
         {
             "m_OutputSlot": {
                 "m_Node": {
-                    "m_Id": "a925367f208344a7a59b218c130b4b48"
-                },
-                "m_SlotId": 0
-            },
-            "m_InputSlot": {
-                "m_Node": {
-                    "m_Id": "6625471d6a8c46b88ab6ef11d9a3b594"
-                },
-                "m_SlotId": 0
-            }
-        },
-        {
-            "m_OutputSlot": {
-                "m_Node": {
                     "m_Id": "a9f1f6df12c94796914a23e707fcc49d"
                 },
                 "m_SlotId": 2
@@ -10946,10 +10932,10 @@
         "m_Expanded": true,
         "m_Position": {
             "serializedVersion": "2",
-            "x": 0.0,
-            "y": 0.0,
-            "width": 0.0,
-            "height": 0.0
+            "x": 2451.33349609375,
+            "y": 1256.0,
+            "width": 199.999755859375,
+            "height": 42.666748046875
         }
     },
     "m_Slots": [
