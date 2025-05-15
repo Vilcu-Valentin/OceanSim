@@ -9,11 +9,19 @@
 
 ## Description
 
-OceanSim is a real-time water simulation implemented in Unity. It features a ocean mesh with sinusoidal waves and a floating system for objects using raycasting. The goal is to simulate natural floating behavior over a dynamic water surface.
+OceanSim is a real-time, physically based ocean surface for Unity.  
+The water is generated from a Fast Fourier Transform (FFT) height field driven by a Phillips spectrum.
+The simulation runs entirely on the CPU but is multi-threaded through Unity Jobs and Burst, and exposes utility functions for sampling height and normal so that boats or other rigid bodies can float convincingly on the dynamic surface.
 
 ## Documentation
 
 ## Features
+
+- **Spectral Wave Synthesis** – Deep-water waves generated from a Phillips spectrum and evolved in the frequency domain  
+- **2-D Inverse FFT Each Frame** – Real-time height, slope-x, and slope-z fields reconstructed on the CPU  
+- **Unity Jobs + Burst** – Multi-core parallelism without requiring compute-shader support  
+- **Tileable Ocean Plane** – Automatic instancing of surrounding tiles for an endless horizon  
+- **Artist-Friendly Controls** – Wind speed, amplitude, chop, resolution, and colour gradients exposed in the inspector  
 
 ## How to Run
 
