@@ -106,11 +106,11 @@ Material:
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _Normal01:
-        m_Texture: {fileID: 0}
+        m_Texture: {fileID: 2800000, guid: 7589d54a6f8b85b48ad139b780e61de4, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _Normal02:
-        m_Texture: {fileID: 0}
+        m_Texture: {fileID: 2800000, guid: df4efa7d512235d4aa33283e8d78b18f, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _NormalMap:

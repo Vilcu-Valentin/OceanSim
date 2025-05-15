@@ -18,6 +18,8 @@ public class FFTOceanDisplacement : MonoBehaviour
     [Header("Amplitude")]
     [Tooltip("Multiplier on all displacements (use 1–10 for testing, then tweak)")]
     public float heightScale = 2f;
+    [Tooltip("Multiplier on all displacements (use 1–10 for testing, then tweak)")]
+    public float chopScale = 2f;
 
     [Header("Visualization")]
     [Tooltip("Color at wave troughs.")]
@@ -172,7 +174,7 @@ public class FFTOceanDisplacement : MonoBehaviour
         float L = windSpd * windSpd / g;
         float L2 = L * L;
         float dotKW = UnityEngine.Vector2.Dot(k.normalized, new UnityEngine.Vector2(1, 0)); // assume wind along +X
-        float damp = 0.001f;
+        float damp = 0.0001f;
         float l2 = L * damp * L * damp;
 
         if (kLen < 1e-6f) return 0f;
@@ -244,8 +246,8 @@ public class FFTOceanDisplacement : MonoBehaviour
 
                 // amplify everything so it's visible
                 float h = (float)Ht[i, j].Real * heightScale;
-                float dx = (float)Hx[i, j].Real * heightScale;
-                float dz = (float)Hz[i, j].Real * heightScale;
+                float dx = (float)Hx[i, j].Real * heightScale * chopScale;
+                float dz = (float)Hz[i, j].Real * heightScale * chopScale;
 
                 var bp = baseVerts[idx];
                 verts[idx] = new UnityEngine.Vector3(bp.x + dx, h, bp.z + dz);
