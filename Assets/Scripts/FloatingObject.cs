@@ -1,75 +1,66 @@
-﻿using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
+﻿using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody))]
 public class FloatingObject : MonoBehaviour
 {
     [Header("Buoyancy Settings")]
-    public float offset = 0f;                 // Înălţimea faţă de nivelul apei
-    public float floatSpeed = 5f;               // Cât de rapid îşi reglează poziţia
-    public float rotateSpeed = 2f;              // Cât de rapid se aliniază la valuri
+    public float offset = 0f;    // height above wave
+    public float floatSpeed = 5f;
+    public float rotateSpeed = 2f;
 
     [Header("References")]
-    public Transform[] floatPoints;             // Cele 4 puncte de testare
-    public LayerMask waterLayer;                // Layer-ul apei
+    public Transform[] floatPoints;          // test points on your hull
+    public FFTOceanDisplacement oceanSolver; // drag in your FFT Ocean GameObject
 
-    private Vector3[] hitPoints;                // Punctele de impact ale razelor
+    private Vector3[] samplePositions;
+    private Vector3[] sampleNormals;
     private Rigidbody rb;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
         if (floatPoints == null || floatPoints.Length < 3)
-            Debug.LogError("Trebuie să ai cel puțin 3 floatPoints configurate!");
-        hitPoints = new Vector3[floatPoints.Length];
+            Debug.LogError("Need at least 3 floatPoints!");
+        samplePositions = new Vector3[floatPoints.Length];
+        sampleNormals = new Vector3[floatPoints.Length];
     }
 
     void FixedUpdate()
     {
-        // 1) Raycast la fiecare punct
-        Vector3 avgPoint = Vector3.zero;
-        int hits = 0;
+        int hits = floatPoints.Length;
+        Vector3 avgPos = Vector3.zero;
+        Vector3 avgNormal = Vector3.zero;
 
+        // 1) sample height & normal at each floatPoint
         for (int i = 0; i < floatPoints.Length; i++)
         {
-            Transform fp = floatPoints[i];
-            if (Physics.Raycast(fp.position, Vector3.down, out RaycastHit hit, 100f, waterLayer))
-            {
-                hitPoints[i] = hit.point;
-                avgPoint += hit.point;
-                hits++;
+            var fp = floatPoints[i].position;
+            float h = oceanSolver.SampleHeight(fp);
+            Vector3 n = oceanSolver.SampleNormal(fp);
+            samplePositions[i] = new Vector3(fp.x, h, fp.z);
+            sampleNormals[i] = n;
 
-                Debug.DrawRay(fp.position, Vector3.down * hit.distance, Color.blue);
-            }
-            else
-            {
-                // Dacă nu lovește, păstrează poziția anterioară ca fallback
-                hitPoints[i] = fp.position + Vector3.down * (transform.position.y - fp.position.y);
-            }
+            avgPos += samplePositions[i];
+            avgNormal += n;
         }
 
-        if (hits == 0) return;
+        // 2) average
+        avgPos /= hits;
+        avgNormal = (avgNormal / hits).normalized;
 
-        // 2) Ajustează înălțimea după media punctelor lovite
-        avgPoint /= hits;
-        Vector3 targetPos = new Vector3(transform.position.x, avgPoint.y + offset, transform.position.z);
-        Vector3 moveDir = (targetPos - transform.position) * floatSpeed;
-        rb.velocity = new Vector3(rb.velocity.x, moveDir.y, rb.velocity.z);
+        // 3) move rigidbody to match wave height
+        Vector3 targetPos = new Vector3(transform.position.x,
+                                        avgPos.y + offset,
+                                        transform.position.z);
+        Vector3 vel = rb.velocity;
+        vel.y = (targetPos.y - transform.position.y) * floatSpeed;
+        rb.velocity = vel;
 
-        // 3) Dacă avem minim 3 hit-uri, calculăm normală de apă și ne aliniem la ea
-        if (hits >= 3)
-        {
-            // Folosim primele 3 puncte pentru plan
-            Vector3 v1 = hitPoints[1] - hitPoints[0];
-            Vector3 v2 = hitPoints[2] - hitPoints[0];
-            Vector3 waterNormal = Vector3.Cross(v1, v2).normalized;
-
-            // Proiecția direcției „forward” pe planul definit de normală
-            Vector3 forwardDir = Vector3.ProjectOnPlane(transform.forward, waterNormal).normalized;
-            Quaternion targetRot = Quaternion.LookRotation(forwardDir, waterNormal);
-
-            rb.MoveRotation(Quaternion.Slerp(rb.rotation, targetRot, rotateSpeed * Time.fixedDeltaTime));
-        }
+        // 4) align rotation to average normal
+        Vector3 forwardOnPlane = Vector3.ProjectOnPlane(transform.forward, avgNormal);
+        Quaternion targetRot = Quaternion.LookRotation(forwardOnPlane, avgNormal);
+        rb.MoveRotation(Quaternion.Slerp(rb.rotation,
+                                         targetRot,
+                                         rotateSpeed * Time.fixedDeltaTime));
     }
 }
